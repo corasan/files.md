@@ -1,0 +1,366 @@
+use EmptyState from "exact:content"
+
+routes nav
+  notes "/"
+    note "/note/:path"
+    create "/new"
+
+shape Summary
+  path: string
+  title: string
+  excerpt: string
+  modified: number
+
+shape Span
+  id: string
+  text: string
+  strong: bool
+  em: bool
+  code: bool
+  href: string
+
+shape Block
+  id: string
+  kind: string
+  depth: number
+  marker: string
+  text: string
+  spans: Span[]
+
+shape Note
+  path: string
+  title: string
+  body: string
+  modified: number
+  blocks: Block[]
+
+shape Reply
+  ok: bool
+  error: string
+  path: string
+  modified: number
+  body: string
+
+fn folderOf(path: string): string = path.split("/").slice(0, -1).join("/")
+
+component Vault
+  state query = ""
+  state draftName = ""
+  state refusal = ""
+  state editing = false
+  state draft = ""
+  state base = 0
+  state aimed = ""
+  state formats = ""
+  state unavailable = ""
+  state currentLink = ""
+  state linkOpen = false
+  state linkUrl = ""
+  resource lib = listNotes(query) as shape Summary[] else empty()
+  resource doc = openNote(selected) as shape Note else empty()
+  mutation created as shape Reply refreshes lib then afterCreate
+  mutation saved as shape Reply refreshes lib, doc then afterSave
+  mutation removed as shape Reply refreshes lib
+  derive selected = match stack(nav).filter(e => e.name == "note").at(-1) { case some(e) => e.params.path, case none => "" }
+  derive createError = match created { case some(r) => r.error, case none => "" }
+  derive saveError = match saved { case some(r) => r.error, case none => "" }
+  derive dirty = editing and draft != doc.body
+  derive createHint = pending(created) ? "Creating…" : draftName.trim() == "" ? "Name the note. Use a slash to put it in a folder, like work/standup." : ""
+
+  task poll mount
+    every(5000, pull)
+
+  action pull
+    refresh lib
+    if not editing
+      refresh doc
+  action search(v: string)
+    query = v
+  action retry
+    refresh lib
+  action openCreate
+    draftName = ""
+    refusal = ""
+    nav = push(nav, "/new")
+  action editName(v: string)
+    draftName = v
+  action create
+    if draftName.trim() != "" and not pending(created)
+      send created = createNote(draftName.trim())
+  action afterCreate
+    refusal = createError
+    match created
+      case some(r)
+        if r.ok
+          let n = back(nav)
+          nav = push(n, path("note", r.path))
+          draft = r.body
+          base = r.modified
+          editing = true
+      case none
+        refusal = createError
+  action startEdit
+    linkOpen = false
+    draft = doc.body
+    base = doc.modified
+    editing = true
+  action editDraft(v: string)
+    draft = v
+  action selected(s)
+    formats = s.formats
+    unavailable = s.unavailable
+    currentLink = s.link
+  action applyFormat(name: string)
+    format("editor", name)
+  action applyHeading(level: string)
+    format("editor", "heading", level)
+  action openLink
+    linkUrl = currentLink
+    linkOpen = true
+    focus("link-url")
+  action editLink(v: string)
+    linkUrl = v
+  action applyLink
+    format("editor", "link", linkUrl.trim())
+    linkOpen = false
+    focus("editor")
+  action cancelLink
+    linkOpen = false
+    focus("editor")
+  action finishEdit
+    linkOpen = false
+    if dirty
+      send saved = saveNote(selected, draft, base)
+    else
+      editing = false
+  action afterSave
+    match saved
+      case some(r)
+        if r.ok
+          base = r.modified
+          if draft == r.body
+            editing = false
+      case none
+        editing = editing
+  action leave
+    if dirty
+      send saved = saveNote(selected, draft, base)
+    editing = false
+  action back
+    if dirty
+      send saved = saveNote(selected, draft, base)
+    editing = false
+    nav = back(nav)
+  action follow(url: string)
+    if dirty
+      send saved = saveNote(selected, draft, base)
+    editing = false
+    nav = top(nav).name == "note" and url.startsWith("/note/") ? replace(nav, url) : go(nav, url)
+  action askRemove
+    showModal("remove")
+  action aim(p: string)
+    aimed = p
+  action remove(p: string)
+    send removed = deleteNote(p)
+    if selected == p
+      editing = false
+      nav = back(nav)
+
+  view
+    main navigationKey=`${top(nav).id}` navigationBack="back" navigate=follow testId="app" width="100%" height="100%"
+      for e in stack(nav) key=e.id
+        if e.name == "notes"
+          column navigationKey=`${e.id}` navigationScroll="notes-list" position="absolute" inset=0 display="flex" flex-direction="column"
+            header display="flex" flex-wrap="wrap" align-items="center" gap=8 padding="8px 16px"
+              text "Vault" role="heading" aria-level=1 flex=1
+              button press=openCreate aria-label="New Note" testId="new-note"
+                image "symbol:compose"
+              input type="search" value=query input=search placeholder="Search all notes" aria-label="Search Notes" testId="search" width="100%"
+            if failed(lib) and lib.length == 0
+              EmptyState(symbol="symbol:alert", title="Can’t Reach Your Vault", message="Check that this device is on your tailnet and the Mac is awake.")
+                button press=retry testId="retry"
+                  text "Try Again"
+            else if lib.length == 0 and query.trim() == "" and not pending(lib)
+              EmptyState(symbol="symbol:document", title="No Notes", message="Notes you write, or Markdown files you put in the vault folder, appear here.")
+                button press=openCreate testId="empty-new"
+                  text "New Note"
+            else if lib.length == 0 and not pending(lib)
+              EmptyState(symbol="symbol:search", title=`No Results for “${query.trim()}”`, message="Check the spelling or try another word.")
+            else
+              list id="notes-list" appearance="auto" listStyle="inset-grouped" flex=1 min-height=0
+                section
+                  for n in lib key=n.path
+                    link href=path("note", n.path) delete=remove(n.path) contextmenu=aim(n.path) contextPopover="note-menu" testId=`note-${n.path}`
+                      column flex=1 min-width=0 gap=2
+                        text n.title testId=`title-${n.path}`
+                        if n.excerpt != ""
+                          text n.excerpt line-clamp=2 font="-exact-subheadline" color="-exact-secondary-label" testId=`excerpt-${n.path}`
+                        if folderOf(n.path) != ""
+                          text folderOf(n.path) font="-exact-footnote" color="-exact-tertiary-label" testId=`folder-${n.path}`
+                      image "symbol:forward-chevron"
+        if e.name == "note"
+          column navigationKey=`${e.id}` navigationScroll="note-body" position="absolute" inset=0 display="flex" flex-direction="column"
+            header display="flex" align-items="center" gap=8 padding="8px 16px"
+              text (doc.path == e.params.path ? doc.title : "") role="heading" aria-level=2 flex=1 testId="note-title"
+              if editing
+                button press=finishEdit disabled=pending(saved) buttonStyle="bordered-prominent" testId="done"
+                  text "Done"
+              else
+                button press=askRemove aria-label="Delete Note" testId="delete-note" disabled=(doc.path != e.params.path)
+                  image "symbol:delete"
+                button press=startEdit aria-label="Edit Note" testId="edit" disabled=(doc.path != e.params.path)
+                  image "symbol:pencil"
+            if saveError != "" and not pending(saved)
+              text saveError font="-exact-footnote" color="-exact-system-red" padding="4px 16px" testId="save-error"
+            if failed(doc) and doc.path != e.params.path
+              EmptyState(symbol="symbol:alert", title="Note Not Found", message="It may have been moved or deleted.")
+                button press=back buttonStyle="filled" testId="missing-back"
+                  text "Back to Notes"
+            else if editing
+              Toolbar(formats=formats, unavailable=unavailable, apply=applyFormat, heading=applyHeading, link=openLink)
+              if linkOpen
+                row gap=8 align-items="center" padding="4px 16px 8px"
+                  input id="link-url" type="url" value=linkUrl input=editLink submit=applyLink placeholder="https://example.com" aria-label="Link Address" autocapitalize="none" testId="link-url" flex=1 min-width=0
+                  button press=applyLink retainFocus=true buttonStyle="bordered-prominent" testId="link-apply"
+                    text (linkUrl.trim() == "" ? "Remove Link" : "Apply")
+                  button press=cancelLink testId="link-cancel"
+                    text "Cancel"
+              scroll id="note-body" flex=1 min-height=0
+                column width="100%" max-width="46rem" margin-left="auto" margin-right="auto" padding="8px 20px 48px" box-sizing="border-box" min-height="100%"
+                  textarea id="editor" markup="markdown" value=draft input=editDraft select=selected border="none" aria-label="Note" testId="editor" autofocus=true flex=1 min-height=320 width="100%" box-sizing="border-box" line-height=1.5
+            else
+              scroll id="note-body" flex=1 min-height=0 user-select="text"
+                column width="100%" max-width="46rem" margin-left="auto" margin-right="auto" padding="8px 20px 48px" box-sizing="border-box" gap=10
+                  if doc.path == e.params.path and doc.blocks.length == 0
+                    text "This note is empty. Tap the pencil to write." color="-exact-secondary-label" testId="empty-note"
+                  for b in (doc.path == e.params.path ? doc.blocks : []) key=`${doc.path}:${b.id}`
+                    BlockView(block=b)
+        if e.name == "create"
+          column navigationKey=`${e.id}` navigationPresentation="modal" navigationScroll="create-form" position="absolute" inset=0
+            header display="flex" align-items="center" justify-content="space-between" padding="8px 16px"
+              button id="back" press=back aria-label="Cancel" testId="create-cancel"
+                image "symbol:close"
+              text "New Note" role="heading"
+              button press=create buttonStyle="bordered-prominent" aria-label="Create" testId="create-save" disabled=(draftName.trim() == "" or pending(created))
+                image "symbol:checkmark"
+            list id="create-form" appearance="auto" listStyle="inset-grouped" flex=1 min-height=0
+              section
+                row
+                  column flex=1 min-width=0 gap=4
+                    input value=draftName input=editName submit=create placeholder="Name" aria-label="Name" autofocus=true aria-invalid=(refusal != "") testId="create-name"
+                    if refusal != ""
+                      text refusal font="-exact-footnote" color="-exact-system-red" testId="create-error"
+                footer
+                  text createHint testId="create-hint"
+      column id="note-menu" popover="auto" role="menu"
+        button press=remove(aimed) destructive=true popovertarget="note-menu" popovertargetaction="hide" testId="menu-delete"
+          image "symbol:delete"
+          text "Move to Trash"
+      dialog id="remove" role="alertdialog" aria-label="Move Note to Trash?"
+        text "It moves to the vault’s .trash folder on your Mac."
+        button press=remove(selected) destructive=true commandfor="remove" command="close" testId="remove-confirm"
+          text "Move to Trash"
+        button commandfor="remove" command="close" testId="remove-cancel"
+          text "Cancel"
+
+component Toolbar
+  props
+    formats: string
+    unavailable: string
+    apply: action
+    heading: action
+    link: action
+  view
+    scroll overflow-x="auto" overflow-y="hidden" flex-shrink=0 border-bottom-width=1 border-bottom-style="solid" border-color="-exact-separator"
+      row role="toolbar" aria-label="Formatting" gap=2 padding="4px 12px" align-items="center"
+        Tool(name="bold", label="Bold", glyph="B", weight=700, slant="normal", formats=formats, unavailable=unavailable, apply=apply)
+        Tool(name="italic", label="Italic", glyph="I", weight=400, slant="italic", formats=formats, unavailable=unavailable, apply=apply)
+        Tool(name="strike", label="Strikethrough", glyph="S", weight=400, slant="normal", formats=formats, unavailable=unavailable, apply=apply)
+        Tool(name="code", label="Code", glyph="</>", weight=400, slant="normal", formats=formats, unavailable=unavailable, apply=apply)
+        view width=1 height=20 background-color="-exact-separator" margin="0 6px"
+        HeadingTool(level="1", formats=formats, unavailable=unavailable, apply=heading)
+        HeadingTool(level="2", formats=formats, unavailable=unavailable, apply=heading)
+        HeadingTool(level="3", formats=formats, unavailable=unavailable, apply=heading)
+        view width=1 height=20 background-color="-exact-separator" margin="0 6px"
+        IconTool(name="bullet", label="Bulleted List", symbol="symbol:list", formats=formats, unavailable=unavailable, apply=apply)
+        Tool(name="ordered", label="Numbered List", glyph="1.", weight=400, slant="normal", formats=formats, unavailable=unavailable, apply=apply)
+        IconTool(name="task", label="Checklist", symbol="symbol:checkmark", formats=formats, unavailable=unavailable, apply=apply)
+        IconTool(name="quote", label="Quote", symbol="symbol:quote", formats=formats, unavailable=unavailable, apply=apply)
+        Tool(name="codeblock", label="Code Block", glyph="{ }", weight=400, slant="normal", formats=formats, unavailable=unavailable, apply=apply)
+        button press=link retainFocus=true aria-label=(` ${formats} `.includes(" link ") ? "Link, on" : "Link") disabled=` ${unavailable} `.includes(" link ") testId="format-link" min-width=36 min-height=36 border-radius=8 background-color=(` ${formats} `.includes(" link ") ? "-exact-tertiary-fill" : "transparent")
+          image "symbol:link"
+
+component Tool
+  props
+    name: string
+    label: string
+    glyph: string
+    weight: number
+    slant: string
+    formats: string
+    unavailable: string
+    apply: action
+  view
+    button press=apply(name) retainFocus=true aria-label=(` ${formats} `.includes(` ${name} `) ? `${label}, on` : label) disabled=` ${unavailable} `.includes(` ${name} `) testId=`format-${name}` min-width=36 min-height=36 border-radius=8 background-color=(` ${formats} `.includes(` ${name} `) ? "-exact-tertiary-fill" : "transparent")
+      text glyph font-weight=weight font-style=slant aria-hidden=true
+
+component IconTool
+  props
+    name: string
+    label: string
+    symbol: string
+    formats: string
+    unavailable: string
+    apply: action
+  view
+    button press=apply(name) retainFocus=true aria-label=(` ${formats} `.includes(` ${name} `) ? `${label}, on` : label) disabled=` ${unavailable} `.includes(` ${name} `) testId=`format-${name}` min-width=36 min-height=36 border-radius=8 background-color=(` ${formats} `.includes(` ${name} `) ? "-exact-tertiary-fill" : "transparent")
+      image symbol
+
+component HeadingTool
+  props
+    level: string
+    formats: string
+    unavailable: string
+    apply: action
+  view
+    button press=apply(level) retainFocus=true aria-label=(` ${formats} `.includes(` heading${level} `) ? `Heading ${level}, on` : `Heading ${level}`) disabled=` ${unavailable} `.includes(" heading ") testId=`format-heading${level}` min-width=36 min-height=36 border-radius=8 background-color=(` ${formats} `.includes(` heading${level} `) ? "-exact-tertiary-fill" : "transparent")
+      text `H${level}` font-weight=600 aria-hidden=true
+
+component Spans
+  props
+    spans: Span[]
+  view
+    for s in spans key=s.id
+      if s.code
+        text s.text font-family="ui-monospace" background-color="-exact-secondary-background" font-weight=(s.strong ? 700 : 400) font-style=(s.em ? "italic" : "normal")
+      else
+        text s.text font-weight=(s.strong ? 700 : 400) font-style=(s.em ? "italic" : "normal") href=s.href color=(s.href != "" ? "-exact-link" : "-exact-label")
+
+component BlockView
+  props
+    block: Block
+  view
+    if block.kind == "heading"
+      text role="heading" aria-level=block.depth font=(block.depth == 1 ? "-exact-title1" : block.depth == 2 ? "-exact-title2" : block.depth == 3 ? "-exact-title3" : "-exact-headline") font-weight=700 padding-top=(block.depth <= 2 ? 10 : 4) testId=`block-${block.id}`
+        Spans(spans=block.spans)
+    else if block.kind == "paragraph"
+      text line-height=1.5 testId=`block-${block.id}`
+        Spans(spans=block.spans)
+    else if block.kind == "item" or block.kind == "task"
+      row gap=8 padding-left=(block.depth * 20) align-items="baseline" testId=`block-${block.id}`
+        if block.kind == "task"
+          image (block.marker == "done" ? "symbol:select-fill" : "symbol:circle") aria-label=(block.marker == "done" ? "Done" : "To do") color=(block.marker == "done" ? "-exact-system-green" : "-exact-tertiary-label")
+        else
+          text block.marker color="-exact-secondary-label" min-width=18
+        text flex=1 min-width=0 line-height=1.5
+          Spans(spans=block.spans)
+    else if block.kind == "code"
+      scroll overflow-x="auto" overflow-y="hidden" background-color="-exact-secondary-background" border-radius=8 padding=12 testId=`block-${block.id}`
+        text block.text font-family="ui-monospace" font="-exact-footnote" white-space="pre"
+    else if block.kind == "quote"
+      row gap=12 testId=`block-${block.id}`
+        view width=3 background-color="-exact-separator" border-radius=2
+        text flex=1 min-width=0 line-height=1.5 color="-exact-secondary-label"
+          Spans(spans=block.spans)
+    else if block.kind == "rule"
+      view height=1 background-color="-exact-separator" margin-top=8 margin-bottom=8 testId=`block-${block.id}`

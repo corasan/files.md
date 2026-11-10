@@ -1,0 +1,115 @@
+test "a new note opens in the editor, saves to the vault, and reads back as formatted Markdown"
+  clock data
+  tap "new-note"
+  clock settle
+  expect disabled "create-save"
+  type "create-name" "Groceries"
+  expect enabled "create-save"
+  tap "create-save"
+  clock data
+  clock settle
+  expect tree has "editor"
+  type "editor" "Buy **oat milk** and `eggs`"
+  tap "done"
+  clock data
+  clock settle
+  expect tree missing "editor"
+  expect text "note-title" == "Groceries"
+  expect text "block-0" == "Buy oat milk and eggs"
+  expect state doc.blocks.0 .spans.1 .strong == true
+  expect state doc.blocks.0 .spans.3 .code == true
+  back
+  clock settle
+  clock data
+  expect text "excerpt-Groceries.md" == "Buy oat milk and eggs"
+  reload
+  clock data
+  expect state lib.0 .path == "Groceries.md"
+
+test "search finds words in any note's text, by prefix, and says when nothing matches"
+  request POST "/api/notes" {"title": "work/Standup"}
+  request PUT "/api/note?path=work/Standup.md" {"body": "# Standup\n\nShip the vault search before Friday."}
+  request POST "/api/notes" {"title": "Pancakes"}
+  request PUT "/api/note?path=Pancakes.md" {"body": "# Pancakes\n\nFlour, eggs and oat milk."}
+  clock +5000
+  clock data
+  expect tree has "note-work/Standup.md"
+  expect text "folder-work/Standup.md" == "work"
+  type "search" "vault"
+  clock data
+  expect tree has "note-work/Standup.md"
+  expect tree missing "note-Pancakes.md"
+  type "search" "flo"
+  clock data
+  expect tree has "note-Pancakes.md"
+  expect tree missing "note-work/Standup.md"
+  type "search" "durian"
+  clock data
+  expect state lib == []
+  type "search" ""
+  clock data
+  expect tree has "note-Pancakes.md"
+
+test "a name already in the vault is refused in place, and the sheet keeps what was typed"
+  request POST "/api/notes" {"title": "Ideas"}
+  clock +5000
+  clock data
+  tap "new-note"
+  clock settle
+  type "create-name" "Ideas"
+  tap "create-save"
+  clock data
+  expect text "create-error" == "There’s already a note at Ideas.md."
+  expect text "create-name" == "Ideas"
+
+test "a file changed outside the app shows up on the next poll"
+  clock data
+  expect tree missing "note-Journal.md"
+  request POST "/api/notes" {"title": "Journal"}
+  request PUT "/api/note?path=Journal.md" {"body": "# Journal\n\nWrote this in another editor."}
+  clock +5000
+  clock data
+  expect text "excerpt-Journal.md" == "Wrote this in another editor."
+
+test "an edit to a note that changed on disk is refused, keeping the draft"
+  request POST "/api/notes" {"title": "Plans"}
+  clock +5000
+  clock data
+  tap "note-Plans.md"
+  clock settle
+  clock data
+  tap "edit"
+  request PUT "/api/note?path=Plans.md" {"body": "# Plans\n\nChanged on the Mac."}
+  type "editor" "My edit"
+  tap "done"
+  clock data
+  expect text "save-error" == "This note changed on disk since you opened it. Copy your edit, then reopen the note."
+  expect text "editor" == "My edit"
+
+test "a note moves to the trash after asking, and a swipe trashes one at once"
+  request POST "/api/notes" {"title": "Old"}
+  request POST "/api/notes" {"title": "Older"}
+  clock +5000
+  clock data
+  tap "note-Old.md"
+  clock settle
+  clock data
+  tap "delete-note"
+  clock settle
+  tap "remove-confirm"
+  clock settle
+  clock data
+  expect tree missing "note-Old.md"
+  tap "note-Older.md-delete"
+  clock data
+  expect tree missing "note-Older.md"
+
+test "a link to a note that isn't there says so"
+  clock data
+  type "app" "/note/missing.md"
+  clock settle
+  clock data
+  expect tree has "missing-back"
+  tap "missing-back"
+  clock settle
+  expect tree has "new-note"
