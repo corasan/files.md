@@ -106,7 +106,7 @@ component Vault
     editing = true
   action editDraft(v: string)
     draft = v
-  action selected(s)
+  action selectionChanged(s)
     formats = s.formats
     unavailable = s.unavailable
     currentLink = s.link
@@ -227,7 +227,7 @@ component Vault
                     text "Cancel"
               scroll id="note-body" flex=1 min-height=0
                 column width="100%" max-width="46rem" margin-left="auto" margin-right="auto" padding="8px 20px 48px" box-sizing="border-box" min-height="100%"
-                  textarea id="editor" markup="markdown" value=draft input=editDraft select=selected border="none" aria-label="Note" testId="editor" autofocus=true flex=1 min-height=320 width="100%" box-sizing="border-box" line-height=1.5
+                  textarea id="editor" markup="markdown" value=draft input=editDraft select=selectionChanged border="none" aria-label="Note" testId="editor" autofocus=true flex=1 min-height=320 width="100%" box-sizing="border-box" line-height=1.5
             else
               scroll id="note-body" flex=1 min-height=0 user-select="text"
                 column width="100%" max-width="46rem" margin-left="auto" margin-right="auto" padding="8px 20px 48px" box-sizing="border-box" gap=10
